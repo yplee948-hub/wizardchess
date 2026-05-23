@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 350" fill="none">
+  <defs>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="glow-strong" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Outer soft streaks -->
+  <g filter="url(#glow)" opacity="0.35">
+    <path d="M 20,295 C 130,295 155,55 340,165 S 570,295 665,65" stroke="white" stroke-width="3" fill="none"/>
+    <path d="M 10,305 C 125,300 145,48 335,158 S 565,305 670,58" stroke="white" stroke-width="2" fill="none"/>
+  </g>
+
+  <!-- Mid streaks -->
+  <g filter="url(#glow)" opacity="0.55">
+    <path d="M 25,288 C 132,288 158,58 342,168 S 568,288 662,68" stroke="white" stroke-width="2" fill="none"/>
+    <path d="M 30,280 C 135,280 162,62 345,172 S 572,282 658,72" stroke="white" stroke-width="1.5" fill="none"/>
+  </g>
+
+  <!-- Main bright core -->
+  <g filter="url(#glow-strong)" opacity="0.9">
+    <path d="M 35,275 C 138,275 165,65 348,175 S 575,278 655,75" stroke="white" stroke-width="2" fill="none"/>
+  </g>
+
+  <!-- Bright highlight streak -->
+  <g opacity="0.95">
+    <path d="M 38,272 C 140,272 167,67 350,177 S 577,275 653,73" stroke="rgba(255,255,255,0.8)" stroke-width="1" fill="none"/>
+  </g>
+</svg>

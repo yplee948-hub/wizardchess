@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>S3 WebSocket test</title>
+<body style="font-family: ui-monospace, monospace; padding: 16px;">
+<h3>WebSocket → <code id="url"></code></h3>
+<pre id="log" style="background:#111;color:#eee;padding:12px;border-radius:6px;height:60vh;overflow:auto;"></pre>
+<script>
+  const URL_ = 'ws://10.155.234.173/ws'
+  document.getElementById('url').textContent = URL_
+  const log = document.getElementById('log')
+  const line = (...a) => {
+    log.textContent += a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ') + '\n'
+    log.scrollTop = log.scrollHeight
+  }
+  line('opening', URL_)
+  const ws = new WebSocket(URL_)
+  ws.onopen    = () => line('OPEN')
+  ws.onmessage = (e) => line('←', e.data)
+  ws.onerror   = (e) => line('ERROR', e.type)
+  ws.onclose   = (e) => line('CLOSE', { code: e.code, reason: e.reason, wasClean: e.wasClean })
+</script>
+</body>
