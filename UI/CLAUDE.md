@@ -2,7 +2,6 @@
 
 # Wizard Chess — Web Companion Interface
 
-**Team 02** · Branch: `claude/wizarding-chess-web-interface-1xKGN`
 **Stack:** Next.js 16.2.4 App Router · React 19 · Tailwind CSS v4 · chess.js v1.4.0 · TypeScript
 
 > Next.js 16 has breaking changes. Read `node_modules/next/dist/docs/` before touching routing/layout.

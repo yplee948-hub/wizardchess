@@ -27,12 +27,15 @@ CoreXY gantry + Electromagnet
 ## Repository Structure
 
 ```
-Wizard_chess/
+wizardchess/
 ├── motor_firmware/      # Raspberry Pi Pico — CoreXY motion + chess game logic
-├── control_firmware/    # Seeed XIAO ESP32-S3 — voice recognition + WebSocket bridge
-├── UI/                  # Next.js web interface with Stockfish AI
-└── prints/              # Fabrication files — stored on OneDrive (see below)
+├── control_firmware/    # Seeed XIAO ESP32-S3 — voice + WebSocket bridge (ESP-NOW to motor)
+├── UI/                  # Next.js web UI + WebSocket broker (only copy — do not duplicate)
+├── prints/              # KiCad PCB + gerbers (STLs on OneDrive)
+└── README.md            # This file
 ```
+
+> **Web UI:** Use the `UI/` folder only. If you download a separate “web interface” zip, merge into `UI/` or replace it — do not add a second top-level copy.
 
 ## Hardware Required
 

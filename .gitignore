@@ -9,8 +9,28 @@
 *_dsa
 *_ecdsa
 *_ed25519
-# OS files
+
+secrets.*
+credentials.*
+*.p12
+*.pfx
+
+# OS / editor
 .DS_Store
+**/.DS_Store
+Thumbs.db
+.vscode/ipch
+
+# Node / Next.js
+node_modules/
+**/node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# PlatformIO
+.pio/
+**/.pio/
 
 # KiCad auto-backups
 *.zip
@@ -19,7 +39,5 @@ _autosave-*
 *.lck
 ~*
 
-secrets.*
-credentials.*
-*.p12
-*.pfx
+# Duplicate exports from zip downloads (keep web UI in UI/ only)
+515_WizardChess-*/
