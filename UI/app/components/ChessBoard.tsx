@@ -8,6 +8,7 @@ interface ChessBoardProps {
   board: (BoardPiece | null)[][]
   selectedSquare: Square | null
   destinationSquare: Square | null
+  impactSquare?: Square | null
   legalMoves: LegalMoveSquare[]
   lastMove: LastMove | null
   inCheck: boolean
@@ -19,6 +20,7 @@ export default function ChessBoard({
   board,
   selectedSquare,
   destinationSquare,
+  impactSquare,
   legalMoves,
   lastMove,
   inCheck,
@@ -83,6 +85,7 @@ export default function ChessBoard({
                   const light = isLight(rowIdx, colIdx)
                   const isFrom = sq === selectedSquare
                   const isTo = sq === destinationSquare
+                  const isImpact = sq === impactSquare
                   const legalCapture = legalSquareMap.get(sq)
                   const isLegal = legalSquareMap.has(sq)
                   const isLastMoveSquare = isLastMove(sq)
@@ -131,6 +134,14 @@ export default function ChessBoard({
                       {piece && (
                         <div className="absolute inset-[8%] pointer-events-none z-10">
                           <ChessPiece type={piece.type} color={piece.color} onDarkSquare={!light} />
+                        </div>
+                      )}
+                      {isImpact && (
+                        <div className="absolute inset-0 pointer-events-none z-30 overflow-hidden" aria-hidden="true">
+                          <div className="board-impact-flash absolute inset-0" />
+                          <div className="board-impact-ring absolute inset-[12%] rounded-full" />
+                          <div className="board-impact-slash board-impact-slash-a absolute left-[12%] top-1/2 h-[10%] w-[76%] rounded-full bg-white" />
+                          <div className="board-impact-slash board-impact-slash-b absolute left-[20%] top-1/2 h-[8%] w-[62%] rounded-full bg-[#fef3c7]" />
                         </div>
                       )}
                     </button>

@@ -94,14 +94,14 @@ export default function IntroPage() {
             src="/intro/wizard.svg"
             alt="Wizard"
             className="
-              w-full mb-[-26px]
-              md:w-[401px] md:mb-[-30px]
-              lg:w-[522px] lg:mb-[-38px]
+              w-full mb-[-6px]
+              md:w-[401px] md:mb-[-14px]
+              lg:w-[522px] lg:mb-[-14px]
             "
           />
 
           {/* — Team DA — divider */}
-          <div className="flex items-center w-full gap-6 md:gap-16 lg:gap-[77px]">
+          <div className="flex items-center w-full gap-7 md:gap-7 lg:gap-[40px]">
             <div className="flex-1 h-px bg-white/40" />
             <span
               className={`${inter.className} text-white/80 whitespace-nowrap team-da-spacing`}
@@ -116,9 +116,9 @@ export default function IntroPage() {
             src="/intro/chess.svg"
             alt="Chess"
             className="
-              w-full mt-[-22px]
-              md:w-[343px] md:mt-[-26px]
-              lg:w-[437px] lg:mt-[-32px]
+              w-full mt-[-20px]
+              md:w-[343px] md:mt-[-18px]
+              lg:w-[437px] lg:mt-[-14px]
             "
           />
         </div>

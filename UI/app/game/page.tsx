@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { Chess, Square } from 'chess.js'
+import { Chess, Square, PieceSymbol, Color } from 'chess.js'
 import {
   BoardPiece,
   LastMove,
@@ -16,11 +16,14 @@ import { useChessSocket, ServerEvent, buildFen, STARTING_BOARD } from '@/app/lib
 import { useStockfish } from '@/app/lib/stockfish'
 import ChessBoard from '@/app/components/ChessBoard'
 import RightPanel from '@/app/components/RightPanel'
+import GameModeRow from '@/app/components/GameModeRow'
 import StatusHeader from '@/app/components/StatusHeader'
+import AttackAnimation from '@/app/components/AttackAnimation'
 
 export type PlayerKind = 'human' | 'ai'
 export interface PlayerConfig { w: PlayerKind; b: PlayerKind }
 const AI_MOVETIME_MS = 1000
+const AI_WATCHDOG_MS = 6000
 
 interface MoveSelection {
   from: Square | null
@@ -28,12 +31,23 @@ interface MoveSelection {
   piece: BoardPiece | null
 }
 
+interface AttackAnimState {
+  id: number
+  piece: PieceSymbol
+  color: Color
+  to: Square
+}
+
 const EMPTY_SELECTION: MoveSelection = { from: null, to: null, piece: null }
+const normalizePromotion = (promotion?: PieceSymbol): 'q' | 'r' | 'b' | 'n' =>
+  promotion === 'r' || promotion === 'b' || promotion === 'n' ? promotion : 'q'
+const ATTACK_ANIMATION_FALLBACK_MS = 4500
 
 function useChessGame() {
-  const chessRef = useRef(new Chess())
+  const [initialChess] = useState(() => new Chess())
+  const chessRef = useRef(initialChess)
 
-  const [board, setBoard] = useState(() => chessBoardToDisplay(chessRef.current))
+  const [board, setBoard] = useState(() => chessBoardToDisplay(initialChess))
   const [currentTurn, setCurrentTurn] = useState<'w' | 'b'>('w')
   const [lastMove, setLastMove] = useState<LastMove | null>(null)
   const [capturedByWhite, setCapturedByWhite] = useState<BoardPiece[]>([])
@@ -42,9 +56,15 @@ function useChessGame() {
   const [selection, setSelection] = useState<MoveSelection>(EMPTY_SELECTION)
   const [legalMoves, setLegalMoves] = useState<LegalMoveSquare[]>([])
   const [announcement, setAnnouncement] = useState('')
-  const [whiteTime, setWhiteTime] = useState(300)
-  const [blackTime, setBlackTime] = useState(300)
   const [players, setPlayers] = useState<PlayerConfig>({ w: 'human', b: 'human' })
+  const [localMode, setLocalMode] = useState(false)
+  const [attackAnim, setAttackAnim] = useState<AttackAnimState | null>(null)
+  const nextAttackAnimIdRef = useRef(0)
+
+  const playAttackAnimation = useCallback((piece: PieceSymbol, color: Color, to: Square) => {
+    nextAttackAnimIdRef.current += 1
+    setAttackAnim({ id: nextAttackAnimIdRef.current, piece, color, to })
+  }, [])
 
   const handleServerEvent = useCallback((e: ServerEvent) => {
     const chess = chessRef.current
@@ -122,50 +142,163 @@ function useChessGame() {
   const { status: connectionStatus, pending, illegalReason, sendMove, sendReset, clearIllegal } = socket
 
   const engine = useStockfish()
+  const engineReady = engine.ready
+  const getBestMove = engine.getBestMove
+
+  const pendingLocalMoveRef = useRef<{ from: Square; to: Square; promotion: 'q' | 'r' | 'b' | 'n' } | null>(null)
+  const pendingLocalMoveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (pendingLocalMoveTimerRef.current) clearTimeout(pendingLocalMoveTimerRef.current)
+    }
+  }, [])
+
+  const applyLocalMove = useCallback((from: Square, to: Square, promotion: 'q' | 'r' | 'b' | 'n' = 'q'): boolean => {
+    const chess = chessRef.current
+    let result
+    try { result = chess.move({ from, to, promotion }) }
+    catch { result = null }
+    if (!result) return false
+
+    const moved: BoardPiece = { type: result.piece, color: result.color, square: result.to as Square }
+    const captured = result.captured
+      ? { type: result.captured, color: result.color === 'w' ? 'b' : 'w', square: result.to as Square } as BoardPiece
+      : undefined
+
+    const lm: LastMove = { from: result.from as Square, to: result.to as Square, san: result.san, piece: moved, captured }
+    setLastMove(lm)
+    if (captured) {
+      if (result.color === 'w') setCapturedByWhite((p) => [...p, captured])
+      else setCapturedByBlack((p) => [...p, captured])
+    }
+    setAnnouncement(moveDescription(lm))
+    setSelection(EMPTY_SELECTION)
+    setLegalMoves([])
+    setBoard(chessBoardToDisplay(chess))
+    setCurrentTurn(chess.turn())
+    setGameStatus(getGameStatus(chess))
+    return true
+  }, [])
+
+  const localMove = useCallback((from: Square, to: Square, skipAnim = false, promotion: 'q' | 'r' | 'b' | 'n' = 'q'): boolean => {
+    const chess = chessRef.current
+    if (!skipAnim) {
+      const matchingMove = chess.moves({ square: from, verbose: true }).find((m) => m.to === to)
+      const movingPiece = chess.get(from)
+
+      if (matchingMove?.captured && movingPiece) {
+        pendingLocalMoveRef.current = { from, to, promotion }
+        if (pendingLocalMoveTimerRef.current) clearTimeout(pendingLocalMoveTimerRef.current)
+        pendingLocalMoveTimerRef.current = setTimeout(() => {
+          const pending = pendingLocalMoveRef.current
+          if (!pending) return
+          pendingLocalMoveRef.current = null
+          pendingLocalMoveTimerRef.current = null
+          applyLocalMove(pending.from, pending.to, pending.promotion)
+        }, ATTACK_ANIMATION_FALLBACK_MS)
+        playAttackAnimation(movingPiece.type, movingPiece.color, to)
+        setSelection(EMPTY_SELECTION)
+        setLegalMoves([])
+        return true
+      }
+    }
+
+    return applyLocalMove(from, to, promotion)
+  }, [applyLocalMove, playAttackAnimation])
 
   const aiThinkingRef = useRef(false)
+  const aiRequestIdRef = useRef(0)
   useEffect(() => {
     if (aiThinkingRef.current) return
     if (players[currentTurn] !== 'ai') return
+    if (attackAnim || pendingLocalMoveRef.current) return
     if (gameStatus !== 'playing' && gameStatus !== 'check') return
-    if (connectionStatus !== 'connected') return
-    if (pending) return
-    if (!engine.ready) return
-
+    if (!localMode && connectionStatus !== 'connected') return
+    if (!localMode && pending) return
     aiThinkingRef.current = true
+    const requestId = ++aiRequestIdRef.current
     const fen = chessRef.current.fen()
     const turnAtRequest = currentTurn
-    engine.getBestMove(fen, AI_MOVETIME_MS).then((mv) => {
-      aiThinkingRef.current = false
-      if (!mv) return
+    const playFallbackMove = () => {
+      const fallbackMove = chessRef.current.moves({ verbose: true })[0]
+      if (!fallbackMove) {
+        setAnnouncement('AI did not find a legal move.')
+        return
+      }
+
+      if (localMode) {
+        localMove(fallbackMove.from as Square, fallbackMove.to as Square, false, normalizePromotion(fallbackMove.promotion))
+      } else if (sendMove(fallbackMove.from as Square, fallbackMove.to as Square)) {
+        setAnnouncement(`AI fallback move: ${fallbackMove.from} → ${fallbackMove.to}.`)
+      } else {
+        setAnnouncement('AI fallback move could not be sent.')
+        return
+      }
+
+      setAnnouncement(`AI fallback move: ${fallbackMove.from} → ${fallbackMove.to}.`)
+    }
+    const watchdog = setTimeout(() => {
+      if (aiRequestIdRef.current !== requestId) return
       if (chessRef.current.turn() !== turnAtRequest) return
-      const ok = sendMove(mv.from, mv.to)
-      if (ok) setAnnouncement(`AI move: ${mv.from} → ${mv.to}.`)
-    }).catch(() => {
+
+      aiRequestIdRef.current += 1
       aiThinkingRef.current = false
+      playFallbackMove()
+    }, AI_WATCHDOG_MS)
+
+    getBestMove(fen, AI_MOVETIME_MS).then((mv) => {
+      clearTimeout(watchdog)
+      if (aiRequestIdRef.current !== requestId) return
+      aiThinkingRef.current = false
+      if (chessRef.current.turn() !== turnAtRequest) return
+      if (!mv) {
+        playFallbackMove()
+        return
+      }
+      if (localMode) {
+        const ok = localMove(mv.from as Square, mv.to as Square, false, mv.promotion ?? 'q')
+        if (!ok) {
+          const fallbackMove = chessRef.current.moves({ verbose: true })[0]
+          if (fallbackMove) {
+            localMove(fallbackMove.from as Square, fallbackMove.to as Square, false, normalizePromotion(fallbackMove.promotion))
+            setAnnouncement(`AI fallback move: ${fallbackMove.from} → ${fallbackMove.to}.`)
+          } else {
+            setAnnouncement(`AI move failed: ${mv.from} → ${mv.to}.`)
+          }
+        }
+      } else {
+        const ok = sendMove(mv.from, mv.to)
+        if (ok) setAnnouncement(`AI move: ${mv.from} → ${mv.to}.`)
+        else {
+          const fallbackMove = chessRef.current.moves({ verbose: true })[0]
+          if (fallbackMove && sendMove(fallbackMove.from as Square, fallbackMove.to as Square)) {
+            setAnnouncement(`AI fallback move: ${fallbackMove.from} → ${fallbackMove.to}.`)
+          } else {
+            setAnnouncement(`AI move failed: ${mv.from} → ${mv.to}.`)
+          }
+        }
+      }
+    }).catch(() => {
+      clearTimeout(watchdog)
+      if (aiRequestIdRef.current !== requestId) return
+      aiThinkingRef.current = false
+      if (chessRef.current.turn() === turnAtRequest) playFallbackMove()
     })
-  }, [players, currentTurn, gameStatus, connectionStatus, pending, engine, sendMove])
-
-  useEffect(() => {
-    if (currentTurn === 'w') setWhiteTime(300)
-    else setBlackTime(300)
-  }, [currentTurn])
-
-  useEffect(() => {
-    const active = gameStatus === 'playing' || gameStatus === 'check'
-    if (!active || connectionStatus !== 'connected') return
-    const id = setInterval(() => {
-      if (currentTurn === 'w') setWhiteTime((t) => Math.max(0, t - 1))
-      else setBlackTime((t) => Math.max(0, t - 1))
-    }, 1000)
-    return () => clearInterval(id)
-  }, [gameStatus, currentTurn, connectionStatus])
+    return () => {
+      clearTimeout(watchdog)
+      if (aiRequestIdRef.current === requestId) {
+        aiRequestIdRef.current += 1
+        aiThinkingRef.current = false
+      }
+    }
+  }, [players, currentTurn, gameStatus, connectionStatus, pending, attackAnim, getBestMove, sendMove, localMode, localMove])
 
   const selectSquare = useCallback((square: Square, piece: BoardPiece | null) => {
     const chess = chessRef.current
     if (gameStatus === 'checkmate' || gameStatus === 'stalemate' || gameStatus === 'draw') return
-    if (connectionStatus === 'disconnected') return
-    if (pending) return
+    if (!localMode && connectionStatus === 'disconnected') return
+    if (!localMode && pending) return
     if (players[chess.turn()] === 'ai') return
 
     if (illegalReason) clearIllegal()
@@ -186,17 +319,46 @@ function useChessGame() {
       }
       return { ...prev, to: square }
     })
-  }, [gameStatus, connectionStatus, pending, illegalReason, clearIllegal, players])
+  }, [gameStatus, connectionStatus, pending, illegalReason, clearIllegal, players, localMode])
+
+  const flushPendingLocalMove = useCallback(() => {
+    const pending = pendingLocalMoveRef.current
+    if (!pending) return
+    if (pendingLocalMoveTimerRef.current) {
+      clearTimeout(pendingLocalMoveTimerRef.current)
+      pendingLocalMoveTimerRef.current = null
+    }
+    pendingLocalMoveRef.current = null
+    applyLocalMove(pending.from, pending.to, pending.promotion)
+  }, [applyLocalMove])
 
   const confirmMove = useCallback(() => {
     if (!selection.from || !selection.to || !selection.piece) return
+    if (localMode) {
+      const chess = chessRef.current
+      const legalMoves = chess.moves({ square: selection.from, verbose: true })
+      const matchingMove = legalMoves.find(m => m.to === selection.to)
+      const isCapture = !!matchingMove?.captured
+
+      if (isCapture) {
+        pendingLocalMoveRef.current = { from: selection.from, to: selection.to, promotion: normalizePromotion(matchingMove.promotion) }
+        if (pendingLocalMoveTimerRef.current) clearTimeout(pendingLocalMoveTimerRef.current)
+        pendingLocalMoveTimerRef.current = setTimeout(flushPendingLocalMove, ATTACK_ANIMATION_FALLBACK_MS)
+        playAttackAnimation(selection.piece.type, selection.piece.color, selection.to)
+        setSelection(EMPTY_SELECTION)
+        setLegalMoves([])
+      } else {
+        localMove(selection.from, selection.to)
+      }
+      return
+    }
     const ok = sendMove(selection.from, selection.to)
     if (!ok) {
       setAnnouncement('Not connected. Move not sent.')
       return
     }
     setAnnouncement(`Move sent: ${selection.from} → ${selection.to}.`)
-  }, [selection, sendMove])
+  }, [selection, sendMove, localMode, localMove, playAttackAnimation, flushPendingLocalMove])
 
   const cancelSelection = useCallback(() => {
     setSelection(EMPTY_SELECTION)
@@ -205,15 +367,35 @@ function useChessGame() {
   }, [illegalReason, clearIllegal])
 
   const resetBoard = useCallback(() => {
+    if (localMode) {
+      chessRef.current = new Chess()
+      setBoard(chessBoardToDisplay(chessRef.current))
+      setCurrentTurn('w')
+      setLastMove(null)
+      setCapturedByWhite([])
+      setCapturedByBlack([])
+      setGameStatus('playing')
+      setSelection(EMPTY_SELECTION)
+      setLegalMoves([])
+      setAttackAnim(null)
+      pendingLocalMoveRef.current = null
+      if (pendingLocalMoveTimerRef.current) {
+        clearTimeout(pendingLocalMoveTimerRef.current)
+        pendingLocalMoveTimerRef.current = null
+      }
+      setAnnouncement('Board reset.')
+      return
+    }
     setAnnouncement('Reset requested.')
     sendReset()
-  }, [sendReset])
+  }, [sendReset, localMode])
 
   return {
     board, currentTurn, lastMove, capturedByWhite, capturedByBlack,
     gameStatus, selection, legalMoves, announcement, connectionStatus,
-    whiteTime, blackTime, pending, illegalReason,
-    players, setPlayers, engineReady: engine.ready,
+    pending, illegalReason,
+    players, setPlayers, engineReady,
+    localMode, setLocalMode, attackAnim, setAttackAnim, flushPendingLocalMove,
     selectSquare, confirmMove, cancelSelection, resetBoard,
   }
 }
@@ -244,14 +426,14 @@ function GameOverOverlay({
 
   return (
     <div
-      className="absolute inset-0 flex items-center justify-center z-30"
-      style={{ background: 'rgba(30, 24, 16, 0.62)', backdropFilter: 'blur(2px)' }}
+      className="fixed inset-0 flex items-center justify-center z-30"
+      style={{ background: 'rgba(237, 239, 243, 0.76)', backdropFilter: 'blur(4px)' }}
       role="dialog"
       aria-modal="true"
       aria-label="Game over"
     >
-      <div className="bg-[#faf7f2] rounded-2xl shadow-2xl px-10 py-8 flex flex-col items-center gap-5 min-w-[260px]">
-        <div className="text-4xl font-bold text-stone-800 tracking-tight">
+      <div className="bg-white border border-[#d8dde7] rounded-2xl shadow-2xl px-10 py-8 flex flex-col items-center gap-5 min-w-[260px]">
+        <div className="text-4xl font-bold text-[#1c1917] tracking-tight">
           {titles[status]}
         </div>
         <div className="text-stone-500 text-sm text-center">
@@ -259,7 +441,7 @@ function GameOverOverlay({
         </div>
         <button
           onClick={onReset}
-          className="mt-2 px-8 py-3 rounded-xl bg-stone-800 text-white font-semibold text-sm hover:bg-stone-700 active:bg-stone-900 transition-colors"
+          className="mt-2 px-8 py-3 rounded-xl bg-[#1d4ed8] text-white font-semibold text-sm hover:bg-[#1e40af] active:bg-[#1e3a8a] transition-colors shadow-sm"
           autoFocus
         >
           Reset Board
@@ -273,8 +455,9 @@ export default function Home() {
   const {
     board, currentTurn, lastMove, capturedByWhite, capturedByBlack,
     gameStatus, selection, legalMoves, announcement, connectionStatus,
-    whiteTime, blackTime, pending, illegalReason,
+    pending, illegalReason,
     players, setPlayers, engineReady,
+    localMode, setLocalMode, attackAnim, setAttackAnim, flushPendingLocalMove,
     selectSquare, confirmMove, cancelSelection, resetBoard,
   } = useChessGame()
 
@@ -288,11 +471,12 @@ export default function Home() {
 
       <main className="flex flex-col md:flex-row md:flex-1 md:overflow-hidden">
         {/* Board area */}
-        <div className="relative flex items-center justify-center p-3 sm:p-6 md:flex-1 md:p-4 lg:p-6 xl:p-8">
+        <div className="relative flex items-center justify-center p-3 sm:p-6 md:flex-1 md:p-4 lg:p-6 xl:p-8 overflow-hidden">
           <ChessBoard
             board={board}
             selectedSquare={selection.from}
             destinationSquare={selection.to}
+            impactSquare={attackAnim?.to ?? null}
             legalMoves={legalMoves}
             lastMove={lastMove}
             inCheck={gameStatus === 'check' || gameStatus === 'checkmate'}
@@ -311,6 +495,17 @@ export default function Home() {
             lastMove={lastMove}
             onReset={resetBoard}
           />
+          {attackAnim && (
+            <AttackAnimation
+              key={attackAnim.id}
+              piece={attackAnim.piece}
+              color={attackAnim.color}
+              onComplete={() => {
+                setAttackAnim(null)
+                flushPendingLocalMove()
+              }}
+            />
+          )}
         </div>
 
         <div className="h-px md:hidden bg-stone-200 shrink-0" />
@@ -325,8 +520,6 @@ export default function Home() {
             gameStatus={gameStatus}
             connectionStatus={connectionStatus}
             selection={selection}
-            whiteTime={whiteTime}
-            blackTime={blackTime}
             onConfirm={confirmMove}
             onCancel={cancelSelection}
             pending={!!pending}
@@ -334,17 +527,20 @@ export default function Home() {
             players={players}
             onPlayersChange={setPlayers}
             engineReady={engineReady}
+            localMode={localMode}
+            onLocalModeChange={setLocalMode}
+            onResetBoard={resetBoard}
           />
 
-          <div className="border-t border-stone-200 px-4 py-3 bg-stone-50 flex items-center justify-between">
-            <span className="text-xs text-stone-400">Robot</span>
-            <button
-              onClick={resetBoard}
-              disabled={connectionStatus === 'disconnected'}
-              className="text-xs px-3 py-1.5 rounded-lg border border-stone-300 text-stone-600 hover:bg-stone-100 transition-colors disabled:opacity-40"
-            >
-              Reset Board
-            </button>
+          {/* Game Mode + Reset — desktop/tablet only; mobile renders this
+              inside RightPanel's scrollable column instead (see RightPanel). */}
+          <div className="hidden md:flex px-4 pt-3 pb-3 items-center justify-between border-t border-[#e0e4ec]">
+            <GameModeRow
+              localMode={localMode}
+              onLocalModeChange={setLocalMode}
+              onResetBoard={resetBoard}
+              isDisabled={connectionStatus === 'disconnected'}
+            />
           </div>
         </div>
       </main>

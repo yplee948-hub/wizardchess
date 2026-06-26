@@ -36,3 +36,10 @@ struct Step {
 
 // Sentinel for Step::target when a piece has left the board (e.g. captured piece MAGNET_OFF)
 static constexpr Position kNoSquare = {'Z', 0};
+
+enum GameResult : uint8_t {
+    GAME_ONGOING,
+    GAME_CHECK,
+    GAME_CHECKMATE,
+    GAME_STALEMATE,
+};

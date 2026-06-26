@@ -12,7 +12,7 @@ const statusConfig: Record<ConnectionStatus, { dot: string; label: string }> = {
 export default function StatusHeader({ status }: { status: ConnectionStatus }) {
   const { dot, label } = statusConfig[status]
   return (
-    <header className="flex items-center justify-between px-6 py-3 border-b border-stone-200 bg-white">
+    <header className="flex items-center justify-between px-6 py-3 bg-[#edeff3]">
       <div className="flex items-center gap-0">
         <img
           src="/pieces/header-knight.svg"
@@ -24,7 +24,7 @@ export default function StatusHeader({ status }: { status: ConnectionStatus }) {
           Wizard Chess
         </span>
       </div>
-      <div className="flex items-center gap-2 text-sm text-stone-600">
+      <div className="flex items-center gap-2 text-sm text-stone-500">
         <span className={`inline-block w-2 h-2 rounded-full ${dot}`} />
         <span>{label}</span>
       </div>

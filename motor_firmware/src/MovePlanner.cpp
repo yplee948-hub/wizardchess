@@ -257,13 +257,30 @@ bool MovePlanner::startMove(Position from, Position to) {
 
     std::vector<Step> plan;
 
-    // Capture: lift the enemy piece off `to` and drop it in the next free
-    // border slot before planning the main move. (No on-board pathfinding for
-    // captures — we go straight off-board.)
-    bool isCapture = !phys.isEmpty(to);
-    int  borderIdx = -1;
+    bool isEnPassant = _game.isEnPassantMove(from, to);
+    bool isCastle    = _game.isCastlingMove(from, to);
+    bool isCapture   = !isEnPassant && !phys.isEmpty(to);
+
+    // En passant: lift the bypassed pawn (at {to.col, from.row}) off to a border slot.
+    if (isEnPassant) {
+        Position capturedPos = {to.col, from.row};
+        int borderIdx = nextFreeBorderSlot();
+        if (borderIdx < 0) return false;
+        auto [bx, by] = _borderSlots[borderIdx];
+        float tx, ty;
+        physicalCoords(capturedPos, tx, ty);
+        PieceColor capturedColor = phys.cells[PhysBoard::ri(capturedPos)][PhysBoard::ci(capturedPos)].color;
+        plan.push_back({MOVE_TO,    capturedPos, tx,   ty,   NO_COLOR});
+        plan.push_back({MAGNET_ON,  capturedPos, 0.0f, 0.0f, capturedColor});
+        plan.push_back({MOVE_TO,    kNoSquare,   bx,   by,   NO_COLOR});
+        plan.push_back({MAGNET_OFF, kNoSquare,   0.0f, 0.0f, NO_COLOR});
+        phys.clear(capturedPos);
+        _borderOccupied[borderIdx] = true;
+    }
+
+    // Normal capture: lift the enemy piece off `to` to a border slot first.
     if (isCapture) {
-        borderIdx = nextFreeBorderSlot();
+        int borderIdx = nextFreeBorderSlot();
         if (borderIdx < 0) return false;
         auto [bx, by] = _borderSlots[borderIdx];
         float tx, ty;
@@ -274,16 +291,24 @@ bool MovePlanner::startMove(Position from, Position to) {
         plan.push_back({MOVE_TO,    kNoSquare, bx,   by,   NO_COLOR});
         plan.push_back({MAGNET_OFF, kNoSquare, 0.0f, 0.0f, NO_COLOR});
         phys.clear(to);
+        _borderOccupied[borderIdx] = true;
     }
 
-    if (!planSegment(phys, from, to, 0, plan)) {
-        return false;
+    if (isCastle) {
+        // Move the king first (F/G or B/C/D are empty by castling rules → no blockers).
+        // Then slide the rook; the recursive planner handles the king being in the way.
+        bool kingside     = (to.col > from.col);
+        Position rookFrom = {kingside ? 'H' : 'A', from.row};
+        Position rookTo   = {kingside ? 'F' : 'D', from.row};
+        if (!planSegment(phys, from,     to,     0, plan)) return false;
+        if (!planSegment(phys, rookFrom, rookTo, 0, plan)) return false;
+    } else {
+        if (!planSegment(phys, from, to, 0, plan)) return false;
     }
 
     for (const Step& s : plan) _steps.push(s);
     bool ok = _game.applyMove(from, to);
     assert(ok);
-    if (isCapture) _borderOccupied[borderIdx] = true;
     return true;
 }
 

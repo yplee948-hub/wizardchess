@@ -36,6 +36,8 @@ export interface ChessSocket {
   clearIllegal: () => void
 }
 
+const PENDING_MOVE_TIMEOUT_MS = 12000
+
 // Build a FEN string chess.js can `.load()` from the 64-char board + turn the
 // S3 sends. Castling rights default to KQkq (we don't track moves of king/rook
 // here — if the server disagrees it will reject illegal moves and the next
@@ -70,14 +72,21 @@ export function useChessSocket(onEvent: (e: ServerEvent) => void): ChessSocket {
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectAttempt = useRef(0)
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const unmounted = useRef(false)
   const pendingRef = useRef<PendingMove | null>(null)
-  pendingRef.current = pending
 
   // Keep the latest onEvent in a ref so we don't have to tear down the socket
   // when the parent re-renders.
   const onEventRef = useRef(onEvent)
-  onEventRef.current = onEvent
+
+  useEffect(() => {
+    pendingRef.current = pending
+  }, [pending])
+
+  useEffect(() => {
+    onEventRef.current = onEvent
+  }, [onEvent])
 
   const handleMessage = useCallback((raw: string) => {
     let msg: unknown
@@ -98,6 +107,10 @@ export function useChessSocket(onEvent: (e: ServerEvent) => void): ChessSocket {
         if (typeof m.from !== 'string' || typeof m.to !== 'string') return
         const from = m.from.toLowerCase() as Square
         const to = m.to.toLowerCase() as Square
+        if (pendingTimer.current) {
+          clearTimeout(pendingTimer.current)
+          pendingTimer.current = null
+        }
         setPending(null)
         setIllegalReason(null)
         onEventRef.current({ kind: 'done', from, to })
@@ -105,6 +118,10 @@ export function useChessSocket(onEvent: (e: ServerEvent) => void): ChessSocket {
       }
       case 'illegal': {
         const reason = typeof m.reason === 'string' ? m.reason : 'Illegal move'
+        if (pendingTimer.current) {
+          clearTimeout(pendingTimer.current)
+          pendingTimer.current = null
+        }
         setPending(null)
         setIllegalReason(reason)
         onEventRef.current({ kind: 'illegal', reason })
@@ -118,6 +135,10 @@ export function useChessSocket(onEvent: (e: ServerEvent) => void): ChessSocket {
       case 'state': {
         if (typeof m.board !== 'string' || m.board.length !== 64) return
         if (m.turn !== 'WHITE' && m.turn !== 'BLACK') return
+        if (pendingTimer.current) {
+          clearTimeout(pendingTimer.current)
+          pendingTimer.current = null
+        }
         setPending(null)
         setIllegalReason(null)
         onEventRef.current({
@@ -181,6 +202,7 @@ export function useChessSocket(onEvent: (e: ServerEvent) => void): ChessSocket {
     return () => {
       unmounted.current = true
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current)
+      if (pendingTimer.current) clearTimeout(pendingTimer.current)
       if (wsRef.current) {
         try { wsRef.current.close() } catch { /* ignore */ }
       }
@@ -190,15 +212,29 @@ export function useChessSocket(onEvent: (e: ServerEvent) => void): ChessSocket {
   const sendMove = useCallback((from: Square, to: Square) => {
     const ws = wsRef.current
     if (!ws || ws.readyState !== WebSocket.OPEN) return false
+    if (pendingTimer.current) clearTimeout(pendingTimer.current)
     setPending({ from, to, phase: 'sending' })
     setIllegalReason(null)
     ws.send(JSON.stringify({ type: 'move', from: from.toUpperCase(), to: to.toUpperCase() }))
+    pendingTimer.current = setTimeout(() => {
+      pendingTimer.current = null
+      setPending(null)
+      setIllegalReason('Move timed out; board state was refreshed.')
+      const current = wsRef.current
+      if (current?.readyState === WebSocket.OPEN) {
+        current.send(JSON.stringify({ type: 'hello' }))
+      }
+    }, PENDING_MOVE_TIMEOUT_MS)
     return true
   }, [])
 
   const sendReset = useCallback(() => {
     const ws = wsRef.current
     if (!ws || ws.readyState !== WebSocket.OPEN) return
+    if (pendingTimer.current) {
+      clearTimeout(pendingTimer.current)
+      pendingTimer.current = null
+    }
     setPending(null)
     setIllegalReason(null)
     ws.send(JSON.stringify({ type: 'reset' }))

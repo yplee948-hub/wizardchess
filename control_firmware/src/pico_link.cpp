@@ -9,7 +9,7 @@
 // ── Peer MAC (hardcoded) ─────────────────────────────────────────────────────
 // Motor controller's MAC. Read once from motor serial at first boot and
 // pasted here. If the motor board is ever swapped, update this constant.
-static const uint8_t MOTOR_MAC[6] = {0x1C, 0xDB, 0xD4, 0x5C, 0x93, 0xC0};
+static const uint8_t MOTOR_MAC[6] = {0x3C, 0xE9, 0x0E, 0x89, 0xD3, 0xAC};
 
 
 // ── State ────────────────────────────────────────────────────────────────────

@@ -18,6 +18,141 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+@keyframes attack-rpg {
+  0%   { transform: translateX(0px);    opacity: 0; }
+  15%  { transform: translateX(60px);   opacity: 1; }
+  65%  { transform: translateX(260px);  opacity: 1; }
+  100% { transform: translateX(420px);  opacity: 0; }
+}
+
+.attack-rpg {
+  animation: attack-rpg 1.0s ease-in-out forwards;
+}
+
+@keyframes attack-video-pop {
+  0%   { transform: translateX(calc(-50% - 240px + var(--attack-video-active-x-offset, 0px))) translateY(var(--attack-video-y-offset, -12px)) scale(0.92); opacity: 0; }
+  55%  { opacity: 1; }
+  100% { transform: translateX(calc(-50% + var(--attack-video-active-x-offset, 0px))) translateY(var(--attack-video-y-offset, -12px)) scale(1);    opacity: 1; }
+}
+
+.attack-video {
+  /* Piece-specific sizing/vertical anchor comes from AttackAnimation, with a
+     smaller mobile baseline so tall pieces do not dominate the board. The
+     sprite still lands horizontally centered: `left: 50%` + `translateX(-50%)`
+     centers the box on its own width at any viewport.
+
+     It is held at the animation's 0% pose (off-screen left, transparent) until JS
+     adds `.is-ready`. Video decode start-up is unpredictable — the first
+     real frame can land ~15ms after mount or 600ms+ later — so an animation
+     that auto-plays on mount can finish and park the sprite on its mark
+     while the canvas is still keying out a blank/no-data frame, i.e. nothing
+     visibly moves and the statue just "appears" already in place. Starting
+     the slide only once `AttackAnimation` confirms `currentTime > 0` (a real
+     decoded frame exists) keeps the motion and the first visible pixels in
+     sync every time. */
+  bottom: calc(var(--attack-video-mobile-bottom, -37%) + 34px);
+  left: 50%;
+  display: block;
+  height: var(--attack-video-mobile-height, 86%);
+  --attack-video-active-x-offset: var(--attack-video-mobile-x-offset, 0px);
+  --attack-video-y-offset: -24px;
+  transform: translateX(calc(-50% - 240px + var(--attack-video-active-x-offset, 0px))) translateY(var(--attack-video-y-offset, -12px)) scale(0.92);
+  opacity: 0;
+}
+
+@media (min-width: 768px) {
+  .attack-video {
+    bottom: calc(var(--attack-video-bottom, -45%) + 68px);
+    height: var(--attack-video-height, 92%);
+    --attack-video-active-x-offset: var(--attack-video-x-offset, 0px);
+    --attack-video-y-offset: -32px;
+  }
+}
+
+.attack-video.is-ready {
+  /* -240px covers roughly half the sprite's own width, so the slide reads as
+     a clear entrance from off-screen rather than a subtle settle — the earlier
+     -110px was too close to its resting spot to register as "sliding in".
+     0.45s gives that longer travel room to breathe without dragging.
+     The clip plays out its own attack motion too (the statue lunges within
+     frame), so this still needs to land the sprite on its mark comfortably
+     before that lunge gets going — otherwise the two motions overlap and read
+     as "sliding twice". Opacity ramps to full by the 55% mark (ahead of the
+     position tween finishing) so the motion itself stays visible right up to
+     landing, instead of fading in just as it arrives. */
+  animation: attack-video-pop 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes attack-video-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+.attack-video.is-leaving {
+  /* Same `animation` shorthand as `.is-ready`, declared after it — at equal
+     specificity the later rule wins outright, so this fully replaces the
+     slide-in with a fade-out rather than fighting it via `transition`
+     (animations with `forwards` keep asserting their held value over
+     transitions on the same property). Picks up from is-ready's held
+     opacity:1 and ramps to 0.
+
+     The source clip is now trimmed to end on the held lunge pose instead of
+     playing through to the statue settling back into its resting stance —
+     that wind-down read as the clip "looping back to the start" right before
+     it vanished. Ending on the strike and fading out lands as a clean impact
+     instead. JS adds this class on `ended` and defers `onComplete` by
+     FADE_OUT_MS so the fade is visible before the element unmounts. */
+  animation: attack-video-fade-out 0.2s ease-out forwards;
+}
+
+@keyframes board-impact-flash {
+  0% { opacity: 0; transform: scale(0.82); }
+  28% { opacity: 0.55; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.12); }
+}
+
+@keyframes board-impact-ring {
+  0% { opacity: 0; transform: scale(0.42); }
+  35% { opacity: 1; transform: scale(0.92); }
+  100% { opacity: 0; transform: scale(1.28); }
+}
+
+@keyframes board-impact-slash-a {
+  0% { opacity: 0; transform: translateX(-18%) rotate(-28deg) scaleX(0.28); }
+  25% { opacity: 1; transform: translateX(0) rotate(-28deg) scaleX(1); }
+  100% { opacity: 0; transform: translateX(12%) rotate(-28deg) scaleX(1.08); }
+}
+
+@keyframes board-impact-slash-b {
+  0% { opacity: 0; transform: translateX(16%) rotate(30deg) scaleX(0.22); }
+  32% { opacity: 0.92; transform: translateX(0) rotate(30deg) scaleX(1); }
+  100% { opacity: 0; transform: translateX(-10%) rotate(30deg) scaleX(1.06); }
+}
+
+.board-impact-flash {
+  background: rgba(255, 255, 255, 0.68);
+  animation: board-impact-flash 0.36s ease-out forwards;
+}
+
+.board-impact-ring {
+  border: 2px solid rgba(254, 243, 199, 0.95);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.4);
+  animation: board-impact-ring 0.42s ease-out forwards;
+}
+
+.board-impact-slash {
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.82);
+  transform-origin: center;
+}
+
+.board-impact-slash-a {
+  animation: board-impact-slash-a 0.34s ease-out forwards;
+}
+
+.board-impact-slash-b {
+  animation: board-impact-slash-b 0.38s ease-out forwards;
+}
+
 .team-da-spacing {
   letter-spacing: 15.82px;
 }

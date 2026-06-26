@@ -9,23 +9,41 @@
 #include "Electromagnet.h"
 #include "ChessGame.h"
 #include "MovePlanner.h"
+#include "NullSerial.h"  // disables Serial — magnet shares UART0 pins (GPIO1/3)
 
-// ---- pins ----
-// MotorA: EN=D6, STEP=D5, DIR=D4
-// MotorB: EN=D9, STEP=D8, DIR=D7
-StepperMotor motorA(D6, D5, D4);
-StepperMotor motorB(D9, D8, D7);
+// ---- pins (ESP32 DevKit GPIO numbers) ----
+// Constructor arg order: StepperMotor(EN, STEP, DIR), Electromagnet(IN1, IN2, ENA).
+// Stepper 1 (TMC2209): EN=GPIO23, STEP=GPIO32, DIR=GPIO33
+// Stepper 2 (TMC2209): EN=GPIO2,  STEP=GPIO5,  DIR=GPIO4
+//   GPIO2 strapping, idles LOW; TMC2209 EN active-low so LOW = enabled (safe at boot).
+//   GPIO5 strapping, safe as output.
+StepperMotor motorA(23, 32, 33);
+StepperMotor motorB(2, 5, 4);
 CoreXY xy(motorA, motorB);
 
-// Magnet H-bridge: IN1=D2, IN2=D3, ENA=D1.
-Electromagnet magnet(D2, D3, D1);
+// Magnet H-bridge (L298N): IN1=GPIO3, IN2=GPIO15, ENA=GPIO1.
+//   ⚠️ ENA=GPIO1 (U0TXD), IN1=GPIO3 (U0RXD) are the UART0 console pins, so
+//   Serial is disabled board-wide via NullSerial.h to keep it off the magnet.
+//   GPIO1 needs a 10k pull-down (magnet off at boot); GPIO15 strapping idles HIGH.
+Electromagnet magnet(3, 15, 1);
 static constexpr bool MAGNET_ENABLED = true;
 
+// Travel speed when the carriage is empty vs. carrying a piece.
+// Pieces slide more reliably at lower speed.
+static constexpr int TRAVEL_STEPS_PER_SEC = 4000;
+static constexpr int CARRY_STEPS_PER_SEC  = 1500;
+
+// Homing / calibration
+static constexpr int   HOME_SPEED_STEPS_PER_SEC = 1200;
+static constexpr float KNOWN_X_CM               = 45.0f;
+static constexpr float KNOWN_Y_CM               = 45.5f;
+static constexpr int   HOME_BACKOFF_STEPS        = 300;  // steps to back off after hitting a switch
+
 // A1 = (3.8, 5.5); each letter = +5.0 cm X, each number = +5.0 cm Y
-static constexpr float SQUARE_ORIGIN_X = 2.5f;
-static constexpr float SQUARE_ORIGIN_Y = 2.5f;
-static constexpr float SQUARE_STEP_X   = 5.0f;
-static constexpr float SQUARE_STEP_Y   = 5.0f;
+static constexpr float SQUARE_ORIGIN_X = 4.0f;
+static constexpr float SQUARE_ORIGIN_Y = 5.0f;
+static constexpr float SQUARE_STEP_X   = 4.625f;
+static constexpr float SQUARE_STEP_Y   = 4.625f;
 
 ChessGame   game;
 MovePlanner planner(game, {SQUARE_ORIGIN_X, SQUARE_ORIGIN_Y, SQUARE_STEP_X, SQUARE_STEP_Y});
@@ -128,10 +146,7 @@ static void scanForControlChannel() {
     candidateIndex = 0;
 
     if (candidateCount > 0) {
-        Serial.printf("[ESP-NOW] found %u channel(s) for '%s':", candidateCount, CONTROL_WIFI_SSID);
-        for (uint8_t i = 0; i < candidateCount; i++) Serial.printf(" %u", candidateChannels[i]);
-        Serial.println();
-        tryCurrentCandidate();
+            tryCurrentCandidate();
     } else {
         channelLocked = false;
         Serial.printf("[ESP-NOW] SSID '%s' not found — will retry\n", CONTROL_WIFI_SSID);
@@ -263,6 +278,8 @@ static void printSquare(const Position& p) {
     else                Serial.printf("%c%d", p.col, p.row);
 }
 
+static void performCalibration();  // forward declaration — defined before setup()
+
 static void drainBusyInput() {
     RxMsg pending;
     while (xQueueReceive(rxQueue, &pending, 0) == pdTRUE) {
@@ -296,6 +313,16 @@ static void executeMove(Position from, Position to) {
     Serial.println();
 
     while (!planner.isMoveDone()) {
+        if (xy.limitHit()) {
+            Serial.println("  LIMIT HIT — recalibrating");
+            if (MAGNET_ENABLED) magnet.off();
+            proto("ILLEGAL:limit-hit");
+            performCalibration();
+            game.reset();
+            sendState();
+            sendTurn();
+            return;
+        }
         Step s = planner.peekNextStep();
         switch (s.type) {
             case MOVE_TO:
@@ -311,6 +338,8 @@ static void executeMove(Position from, Position to) {
                 printSquare(s.target);
                 Serial.println();
                 if (MAGNET_ENABLED) magnet.on(s.polarity);
+                delay(300);  // let the field settle and grab the piece
+                xy.setSpeed(CARRY_STEPS_PER_SEC);
                 break;
             case MAGNET_OFF:
                 Serial.print("  MAGNET OFF @ ");
@@ -318,6 +347,7 @@ static void executeMove(Position from, Position to) {
                 Serial.println();
                 delay(150);
                 if (MAGNET_ENABLED) magnet.off();
+                xy.setSpeed(TRAVEL_STEPS_PER_SEC);
                 break;
         }
         planner.nextStep();
@@ -330,9 +360,28 @@ static void executeMove(Position from, Position to) {
     done += from.col; done += from.row; done += ':';
     done += to.col;   done += to.row;
     proto(done);
-    sendTurn();
 
-    Serial.printf("  Move done. Next turn: %s\n", turnStr(game.getTurn()));
+    GameResult result = game.getResult();
+    switch (result) {
+        case GAME_CHECKMATE:
+            proto(game.getTurn() == WHITE ? "CHECKMATE:WHITE" : "CHECKMATE:BLACK");
+            Serial.printf("  Checkmate! %s wins.\n",
+                          game.getTurn() == WHITE ? "Black" : "White");
+            break;
+        case GAME_STALEMATE:
+            proto("STALEMATE");
+            Serial.println("  Stalemate — draw.");
+            break;
+        case GAME_CHECK:
+            proto(game.getTurn() == WHITE ? "CHECK:WHITE" : "CHECK:BLACK");
+            sendTurn();
+            Serial.printf("  Check! %s to move.\n", turnStr(game.getTurn()));
+            break;
+        default:
+            sendTurn();
+            Serial.printf("  Move done. Next turn: %s\n", turnStr(game.getTurn()));
+            break;
+    }
 }
 
 static void handleCommand(String input) {
@@ -381,6 +430,53 @@ static void handleCommand(String input) {
     executeMove(from, to);
 }
 
+static void performCalibration() {
+    Serial.println("[CAL] Starting calibration...");
+    xy.setSpeed(HOME_SPEED_STEPS_PER_SEC);
+    xy.clearBounds();
+
+    // ---- X axis ----
+    Serial.println("[CAL] Homing -X...");
+    xy.homeToLimit(/*xAxis=*/true, /*positive=*/false, HOME_SPEED_STEPS_PER_SEC);
+    xy.setPosition(0, xy.getY());
+    xy.moveBy(HOME_BACKOFF_STEPS, 0);   // back off so switch releases
+    delay(150);
+
+    Serial.println("[CAL] Measuring +X...");
+    long xSteps = xy.homeToLimit(true, true, HOME_SPEED_STEPS_PER_SEC);
+    xy.moveBy(-HOME_BACKOFF_STEPS, 0);  // back off from +X
+    delay(150);
+
+    // ---- Y axis ----
+    Serial.println("[CAL] Homing -Y...");
+    xy.homeToLimit(/*xAxis=*/false, /*positive=*/false, HOME_SPEED_STEPS_PER_SEC);
+    xy.setPosition(xy.getX(), 0);
+    xy.moveBy(0, HOME_BACKOFF_STEPS);   // back off so switch releases
+    delay(150);
+
+    Serial.println("[CAL] Measuring +Y...");
+    long ySteps = xy.homeToLimit(false, true, HOME_SPEED_STEPS_PER_SEC);
+    xy.moveBy(0, -HOME_BACKOFF_STEPS);  // back off from +Y
+    delay(150);
+
+    // ---- Compute steps/cm ----
+    float spcX = (float)xSteps / KNOWN_X_CM;
+    float spcY = (float)ySteps / KNOWN_Y_CM;
+    float spc  = (spcX + spcY) / 2.0f;
+    xy.setStepsPerCm(spc);
+    xy.setMaxBounds(xSteps, ySteps);
+
+    Serial.printf("[CAL] X: %ld steps (%.1f/cm)  Y: %ld steps (%.1f/cm)  avg: %.1f/cm\n",
+                  xSteps, spcX, ySteps, spcY, spc);
+
+    // ---- Park near origin ----
+    xy.setPosition(xSteps - HOME_BACKOFF_STEPS, ySteps - HOME_BACKOFF_STEPS);
+    xy.moveToCm(SQUARE_ORIGIN_X - SQUARE_STEP_X, SQUARE_ORIGIN_Y - SQUARE_STEP_Y);
+    xy.setSpeed(TRAVEL_STEPS_PER_SEC);
+
+    Serial.println("[CAL] Calibration done.");
+}
+
 void setup() {
     Serial.begin(115200);
     delay(1000);
@@ -390,10 +486,21 @@ void setup() {
     espNowInit();
 
     xy.begin();
-    xy.setSpeed(1500);
-    xy.setHome();
-    xy.setMaxBounds(16400, 16400);
+    xy.setSpeed(TRAVEL_STEPS_PER_SEC);
+
+    // Limit switches — active-LOW (switch connects GPIO to GND; 10kΩ pull-up to 3.3V).
+    CoreXY::LimitPins limits;
+    limits.xMinus  = 26;
+    limits.xPlus   = 25;
+    limits.yMinus1 = 34;
+    limits.yMinus2 = 35;
+    limits.yPlus1  = 36;
+    limits.yPlus2  = 39;
+    xy.setLimitSwitches(limits, /*activeHigh=*/false);
+
     if (MAGNET_ENABLED) magnet.begin();
+
+    performCalibration();
 
     Serial.println("[ChessBot] Ready. Waiting for pairing...");
 }
